@@ -575,13 +575,158 @@ http PUT http://localhost:8080/actuator/down
 
 
 ## Autoscale(HPA)
+* CPU 200m 설정
+```yaml
+spec:
+containers:
+    resources:
+      requests:
+        cpu: "200m"
+```
 
+* HPA(Horizonal Pod Autoscale)를 cpu임계치=20%, 최대Pod수=3, 최저Pod수=1 로 설정
+
+kubectl autoscale deployment fashion-store --cpu-percent=20 --min=1 --max=3
+
+
+* siege 컨테이너 내부에서 동시사용자 1명, 20초간 부하 테스트를 실행
+
+kubectl exec -it siege -- /bin/bash
+siege -c1 -t10S -v http://fashion-store:8080/products
+
+
+> HTTP/1.1 200     0.02 secs:    2599 bytes ==> GET  /products
+> HTTP/1.1 200     0.01 secs:    2599 bytes ==> GET  /products
+> 
+> Lifting the server siege...
+> Transactions:                    688 hits
+> Availability:                 100.00 %
+> Elapsed time:                   9.10 secs
+> Data transferred:               1.71 MB
+> Response time:                  0.01 secs
+> Transaction rate:              75.60 trans/sec
+> Throughput:                     0.19 MB/sec
+> Concurrency:                    0.99
+> Successful transactions:         688
+> Failed transactions:               0
+> Longest transaction:            0.58
+> Shortest transaction:           0.00
+
+* CPU 증가에 따른 오토스케일 확인
 <img width="733" alt="스크린샷 2022-04-08 오전 12 53 51" src="https://user-images.githubusercontent.com/54835264/162343458-39fedaa7-bdee-4274-8e96-e4e8f1237ec6.png">
 
 ## Self-healing(Liveness Probe)
+* Liveness Probe 설정 후 재배포 실행
+```yaml
+livenessProbe:
+  httpGet:
+    path: /actuator/health
+    port: 8080
+  initialDelaySeconds: 120
+  timeoutSeconds: 2
+  periodSeconds: 5
+  failureThreshold: 5
+```
 
+* 서비스 오류 발생
+
+> 2022-04-07 16:07:18.646 ERROR 1 --- [           main] o.s.boot.SpringApplication               : Application run failed
+
+* 파드 상태 및 리스타트 확인
+
+kubectl get po       
+```cmd
+NAME                               READY    STATUS             RESTARTS    AGE
+fashion-store-7bdd7b8d8b-9nl67     1/2      CrashLoopBackOff   5           5m14s
+```
 
 ## Zero-downtime deploy(Readiness Probe)
 
+* HPA 제거
+
+kubectl delete hpa fashion-store
+
+* siege 컨테이너 진입 후 store 부하테스트 실행
+
+kubectl exec -it siege -- /bin/bash
+siege -c1 -t10S -v http://fashion-store:8080/products
+
+* Availability 75.44% 확인
+```cmd
+HTTP/1.1 503     0.05 secs:      91 bytes ==> GET  /products
+HTTP/1.1 503     0.08 secs:      91 bytes ==> GET  /products
+
+Lifting the server siege...
+Transactions:                    215 hits
+Availability:                  75.44 %
+Elapsed time:                   9.33 secs
+Data transferred:               0.54 MB
+Response time:                  0.04 secs
+Transaction rate:              23.04 trans/sec
+Throughput:                     0.06 MB/sec
+Concurrency:                    0.99
+Successful transactions:         215
+Failed transactions:              70
+Longest transaction:            0.42
+Shortest transaction:           0.00
+```
+
+* Readiness Probe 설정 후 재배포 실행
+```yaml
+readinessProbe:
+  httpGet:
+    path: /actuator/health
+    port: 8080
+  initialDelaySeconds: 10
+  timeoutSeconds: 2
+  periodSeconds: 5
+  failureThreshold: 10
+```
+* Availability 100% 확인
+```cmd
+Lifting the server siege...
+Transactions:                    680 hits
+Availability:                 100.00 %
+Elapsed time:                   9.02 secs
+Data transferred:               1.71 MB
+Response time:                  0.01 secs
+Transaction rate:              75.60 trans/sec
+Throughput:                     0.19 MB/sec
+Concurrency:                    0.99
+Successful transactions:         680
+Failed transactions:               0
+Longest transaction:            0.58
+Shortest transaction:           0.00
+```
 
 ## Config Map / Persustemce Volume
+* Spring-Boot Profile 세팅을 위해 OS 환경 변수 SPRING_PROFILES_ACTIVE, TZ 설정
+
+컨피그맵 생성
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: store-config
+data:
+ profile-k8s: “dev,k8s”
+ timezone_seoul: “Asia/Seoul”
+```
+
+Deployment.yaml 내 컨피그맵 참조 선언
+```yaml
+spec:
+  containers:
+      env:
+        - name: SPRING_PROFILES_ACTIVE 
+          valueFrom:
+            configMapKeyRef:
+              name: store-config     
+              key: profile-k8s 
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: store-config
+              key: timezone_seoul
+```
+
