@@ -150,7 +150,7 @@ public void when_UPDATE_DeliveryStarted(@Payload DeliveryStarted deliveryStarted
 
 http http://fashion-order:8080/orders productId=1 productName=“Outwear-2” qty=1
 
-http  http://fashion-orderview:8080/orderStatuses
+http http://fashion-orderview:8080/orderStatuses
 
 >    "orderStatuses" : [ {
 >      "productId" : 1,
@@ -251,14 +251,329 @@ http DELETE http://fashion-order:8080/orders/1
 
 
 ## Req / Resp
+* FeignClient 구현
+
+pom.xml
+```xml
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+        <!-- feign client -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+```
+
+Application.java
+```java
+@SpringBootApplication
+@EnableFeignClients
+public class Application {
+…
+}
+```
+
+Order.java
+```java
+@PostPersist
+private void callDeliveryStart(){
+
+    // 배송 시작
+    DeliveryService deliveryService = Application.applicationContext.getBean(DeliveryService.class);
+    deliveryService.startDelivery(delivery);
+}
+```
+
+
+DeliveryService.java
+```java
+@FeignClient(name ="delivery", url="${api.url.delivery}")
+public interface DeliveryService {
+
+   @RequestMapping(method = RequestMethod.POST, value = "/deliveries", consumes = "application/json")
+    void startDelivery(Delivery delivery);
+
+}
+```
+
+* 주문
+
+http localhost:8081/orders productId=1 quantity=1 customerId=“cust1” customerName=“jang” customerAddr="seoul"
+
+* 배달 확인
+
+http localhost:8082/deliveries
+
+
+> HTTP/1.1 200 
+> Content-Type: application/hal+json;charset=UTF-8
+> Date: Thu, 07 Apr 2022 05:48:11 GMT
+> Transfer-Encoding: chunked
+>
+> {
+>     "_embedded": {
+>         "deliveries": [
+>            {
+>                "_links": {
+>                    "delivery": {
+>                        "href": "http://localhost:8082/deliveries/1"
+>                    },
+>                   "self": {
+>                        "href": "http://localhost:8082/deliveries/1"
+>                    }
+>                },
+>                "customerId": "“cust1”",
+>                "customerName": "“jang”",
+>                "deliveryAddress": "seoul",
+>                "deliveryId": 1,
+>               "deliveryState": "DeliveryStarted",
+>                "orderId": null,
+>                "productId": 1,
+>                "productName": “Outwear-1”,
+>                "quantity": 1
+>            }
+>        ]
+>    },
+>    "_links": {
+>        "profile": {
+>           "href": "http://localhost:8082/profile/deliveries"
+>        },
+>        "search": {
+>            "href": "http://localhost:8082/deliveries/search"
+>        },
+>        "self": {
+>            "href": "http://localhost:8082/deliveries"
+>        }
+>    }
+>}
+
+
 ## Gateway
+* Istio Ingress Gateway 를 통한 단일진입점 구현
+
+VirtualService 생성
+```yaml
+kubectl apply -f - << EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: fasion-vs
+spec:
+  hosts:
+    - "*"
+  gateways:
+  - fashion-gw
+  http:
+  - match:
+    - uri:
+         prefix: /api/fashion-order
+    rewrite:
+      uri: /
+    route:
+    - destination:
+         host: fashion-order
+         port:
+           number: 8080
+EOF
+```
+
+Istio Gateway 생성
+```yaml
+kubectl apply -f - << EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: fashion-gw
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+EOF
+```
+* default 네임스페이스에 Istio 주입
+
+kubectl label namespace default istio-injection=enabled
+
+* 게이트웨이 외부 서비스주소 확인
+
+kubectl -n istio-system get service/istio-ingressgateway
+
+> NAME                   TYPE           CLUSTER-IP     EXTERNAL-IP                                                                PORT(S)                >                                                     AGE
+> istio-ingressgateway   LoadBalancer   10.100.4.126   ae30b0fdcdd964a2aab068187a080e3f-17329660.ca-central-1.elb.amazonaws.com 15021:31179/TCP,80:32099/TCP,443:30894/TCP,31400:30542/TCP,15443:31328/TCP   71m
+
+
+* Gateway 를 통한 서비스 접근 확인
+
+curl http://ae30b0fdcdd964a2aab068187a080e3f-17329660.ca-central-1.elb.amazonaws.com/api/fashion-order/products
+
+> {
+>  "_embedded" : {
+>    "products" : [ {
+>      "@id" : 1,
+>      "name" : “product-1”,
+>      "price" : 20000,
+>      "stock" : 1000000,
+>      "imageUrl" : "",
+>      "_links" : {
+>        "self" : {
+>          "href" : "http://ae30b0fdcdd964a2aab068187a080e3f-17329660.ca-central-1.elb.amazonaws.com/products/1"
+>        },
+>        "product" : {
+>          "href" : "http://ae30b0fdcdd964a2aab068187a080e3f-17329660.ca-central-1.elb.amazonaws.com/products/1"
+>        },
+>        "productOptions" : {
+>          "href" : "http://ae30b0fdcdd964a2aab068187a080e3f-17329660.ca-central-1.elb.amazonaws.com/products/1/productOptions"
+>        }
+>      }
+>    }, ...
+
+
 ## Deploy / Pipeline
+* AWS CodeBuild 를 마이크로 서비스 별로 생성
 <img width="1314" alt="스크린샷 2022-04-08 오전 12 36 03" src="https://user-images.githubusercontent.com/54835264/162343492-03ccb129-894e-467a-9981-47181a5f0b8b.png">
+
+* EKS에 배포 후 Deployment 확인
 <img width="1100" alt="스크린샷 2022-04-08 오전 12 37 20" src="https://user-images.githubusercontent.com/54835264/162343497-b6952ceb-8b4e-4f3b-a630-ca7a848f1381.png">
 
 
-
 ## Circuit Breaker
+* Istio DestionationRule 을 통한 서킷브레이커 구현
+
+* 테스트를 위한 서비스 파드 레플리카 증가
+
+kubectl scale deploy fashion-delivery --replicas=3
+
+DestinationRule 생성
+```
+kubectl apply -f - << EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: fashion-dr
+spec:
+  host: fashion-delivery
+  trafficPolicy:
+    outlierDetection:
+      consecutive5xxErrors: 1
+      interval: 1s
+      baseEjectionTime: 3m
+      maxEjectionPercent: 100
+EOF
+```
+
+* siege 생성
+
+kubectl create deploy siege --image=ghcr.io/acmexii/siege-nginx:latest
+
+* siege 컨테이너 진입
+
+kubectl exec -it pod/siege -- /bin/bash
+
+* RR패턴으로 3개 Replica 접근 확인
+http http://fashion-delivery:8080/actuator/echo
+
+
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 47
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:29:26 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 22
+> 
+> fashion-delivery-6fd58757b9-6gmwg/192.168.17.23
+> 
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 47
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:29:28 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 274
+> 
+> fashion-delivery-6fd58757b9-m8dlk/192.168.78.83
+> 
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 47
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:29:30 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 258
+> 
+> fashion-delivery-6fd58757b9-mhrk6/192.168.35.36
+
+* actuator 를 통한 서비스 오류 발생
+
+http PUT http://localhost:8080/actuator/down
+
+> HTTP/1.1 200 
+> Content-Type: application/json;charset=UTF-8
+> Date: Thu, 07 Apr 2022 09:31:45 GMT
+> Transfer-Encoding: chunked
+> 
+> {
+>     "status": "DOWN"
+> }
+
+* 하나의 서비스 파드를 Down 한 이후 서킷브레이커 동작 확인
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 48
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:38:19 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 4
+> 
+> fashion-delivery-6fd58757b9-dk6t9/192.168.19.157
+> 
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 47
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:38:21 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 3
+> 
+> fashion-delivery-6fd58757b9-mhrk6/192.168.35.36
+> 
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 47
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:38:22 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 6
+> 
+> fashion-delivery-6fd58757b9-mhrk6/192.168.35.36
+> 
+> root@siege-75d5587bf6-2h657:/# http http://fashion-delivery:8080/actuator/echo
+> HTTP/1.1 200 OK
+> content-length: 48
+> content-type: text/plain;charset=UTF-8
+> date: Thu, 07 Apr 2022 09:38:25 GMT
+> server: envoy
+> x-envoy-upstream-service-time: 7
+> 
+> fashion-delivery-6fd58757b9-dk6t9/192.168.19.157
+
+
 ## Autoscale(HPA)
 
 <img width="733" alt="스크린샷 2022-04-08 오전 12 53 51" src="https://user-images.githubusercontent.com/54835264/162343458-39fedaa7-bdee-4274-8e96-e4e8f1237ec6.png">
