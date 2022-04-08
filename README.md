@@ -1,10 +1,5 @@
 # * 온라인 의류 쇼핑몰 *
-
-
 ![online-clothes-shopping-on-internet-illustration-network-sale-payment-market-consumer-choose-garment-clothing-store_109722-1432](https://user-images.githubusercontent.com/54835264/162344434-0429aeea-da1d-4e41-8c36-cbaaee4e7b0b.jpg)
-
-
-
 
 
 ## 분석설계
@@ -44,7 +39,7 @@
 * OrderPlaced — (async) —> StoreAccepted — (async) —> DeliveryStarted
 
 Order.java
-```
+```java
 @Entity
 @Table(name="Order_table")
 public class Order {
@@ -70,12 +65,136 @@ public class Order {
     }
 ```
 
+PolicyHandler - Store
+```java
+@Service
+public class PolicyHandler{
+    @Autowired
+    StoreRepository storeRepository;
 
+    @StreamListener(KafkaProcessor.INPUT)
+    public void wheneverOrderPlaced_StoreAccepted(@Payload OrderPlaced orderPlaced){
+
+        if(orderPlaced.isMe()){
+           Store store = new Store();
+           store.setOrderId(orderPlaced.getId());
+           store.setProductId(orderPlaced.getProductId());
+           store.setProductName(orderPlaced.getProductName());
+           storeRepository.save(store);
+        }
+    }
+}
+
+```
+
+PolicyHandler.java - Delivery
+```java
+@Service
+public class PolicyHandler{
+    @Autowired
+    DeliveryRepository deliveryRepository;
+
+    @StreamListener(KafkaProcessor.INPUT)
+    public void wheneverStoreAccepted_StartDelivery(@Payload StoreAccepted storeAccepted){
+
+        if(storeAccepted.isMe()){
+           Delivery delivery = new Delivery();
+           delivery.setOrderId(storeAccepted.getId());
+           delivery.setProductId(storeAccepted.getProductId());
+           delivery.setProductName(storeAccepted.getProductName());
+           deliveryRepository.save(delivery);
+        }
+    }
+}
+```
+
+* 주문 생성 -> 수락 -> 배달 시작
+
+http http://fashion-order:8080/orders productId=1 productName=“Outwear-1 qty=1
+
+* 이벤트 확인
+
+> {"eventType":"OrderPlaced","timestamp":"20220407112753","id":1,"productId":1,"qty":1,"productName":"“Outwear-1","me":true}
+> {"eventType”:”StoreAccepted","timestamp":"20220407112950","id":1,"orderId":1,"productId":1,"productName":"“Outwear-1","me":true}
+> {"eventType":"DeliveryStarted","timestamp":"20220407113210","id":1,"orderId":1,"productId":1,"productName":"“Outwear-1","me":true}
 
 
 ## CQRS
+* 주문확인에 대한 뷰서비스를 제공
+
+OrderView.java
+```java
+@StreamListener(KafkaProcessor.INPUT)
+public void when_CREATE_orderPlaced(@Payload OrderPlaced orderPlaced){
+        OrderStatus orderStatus = new OrderStatus();
+        orderStatus.setOrderId(orderPlaced.getId());
+        orderStatus.setProductId(orderPlaced.getProductId());
+        orderStatus.setQty(orderPlaced.getQty());
+        orderStatus.setProductName(orderPlaced.getProductName());
+        orderStatus.setOrderStatus(OrderPlaced.class.getSimpleName());
+        repository.save(orderStatus);
+}
+
+@StreamListener(KafkaProcessor.INPUT)
+public void when_UPDATE_DeliveryStarted(@Payload DeliveryStarted deliveryStarted){
+        OrderStatus orderStatus = repository.findById(deliveryStarted.getOrderId()).orElse(null);;
+        if( orderStatus != null ){
+            orderStatus.setDeliveryId(deliveryStarted.getId());
+            orderStatus.setDeliveryStatus(DeliveryStarted.class.getSimpleName());
+            repository.save(orderStatus);
+        }
+}
+```
+
+* 주문 및 주문상태 확인
+
+http http://fashion-order:8080/orders productId=1 productName=“Outwear-2” qty=1
+
+http  http://fashion-orderview:8080/orderStatuses
+
+>    "orderStatuses" : [ {
+>      "productId" : 1,
+>      "qty" : 1,
+>      "productName" : “Outwear-2",
+>      "orderStatus" : "OrderPlaced",
+>      "deliveryId" : 1,
+>      "deliveryStatus" : "DeliveryStarted",
+>      "_links" : {
+>        "self" : {
+>          "href" : "http://fashion-orderview:8080/orderStatuses/1"
+>        },
+>        "orderStatus" : {
+>          "href" : "http://fashion-orderview:8080/orderStatuses/1"
+>        }
+>      }
+>    } ]
+
 
 ## Correlation / Compensation
+* Fashion Store 프로젝트에서는 PolicyHandler에서 처리 시 어떤 건에 대한 처리인지를 구별하기 위한 Correlation-key 구현 
+* 이벤트 클래스 안의 변수로 전달받아 서비스간 연관된 처리 구현
+* 주문 -> 점주승인 -> 배달시작 -> 주문취소 -> 취소승인 -> 배달취소
+
+#### 주문
+Order.java
+```java
+@PreRemove
+public void onPreRemove(){
+    OrderCancelled orderCancelled = new OrderCancelled();
+    BeanUtils.copyProperties(this, orderCancelled);
+    orderCancelled.publishAfterCommit();
+}
+```
+ http http://fashion-order:8080/orders productId=1 productName=“Outwear-1” qty=1
+ 
+> {"eventType":"OrderPlaced","timestamp":"20220407124339","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
+> {"eventType”:”StoreAccepted”,”timestamp":"20220407124339","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
+> {"eventType":"DeliveryStarted","timestamp":"20220407124339","id":1,"orderId":1,"productId":1,"productName":"“Outwear-1”","me":true}
+
+#### 주문취소
+
+
+
 ## Req / Resp
 ## Gateway
 ## Deploy / Pipeline
