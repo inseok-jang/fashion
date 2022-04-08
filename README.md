@@ -26,11 +26,11 @@
 * 구매자가 상점관리에서 확인할 수 있는 구매 정보 및 배송상태 등을 주문시스템에서 한번에 확인할 수 있어야 한다 [CQRS]
 
 
-### 바운디드 컨텍스트, 이벤트, 유저, 어그리게잇 등 설정 / Pub-Sub, Req-Res 연결
+### 바운디드 컨텍스트, 이벤트, 유저, 어그리게잇 등 설정
 <img width="1211" alt="스크린샷 2022-04-08 오전 10 06 12" src="https://user-images.githubusercontent.com/54835264/162343389-322b4f31-7b8b-40bd-a2ef-b3ac9eb1be79.png">
 
 
-### 완성본 검증
+### Pub-Sub, Req-Res 연결 / 완성본 검증
 <img width="1151" alt="스크린샷 2022-04-07 오후 1 52 20" src="https://user-images.githubusercontent.com/54835264/162343407-fec965ac-4da4-4105-bbca-8c4dc8e3b8a3.png">
 
 
@@ -175,7 +175,7 @@ http  http://fashion-orderview:8080/orderStatuses
 * 이벤트 클래스 안의 변수로 전달받아 서비스간 연관된 처리 구현
 * 주문 -> 점주승인 -> 배달시작 -> 주문취소 -> 취소승인 -> 배달취소
 
-#### 주문
+### 주문
 Order.java
 ```java
 @PreRemove
@@ -185,14 +185,69 @@ public void onPreRemove(){
     orderCancelled.publishAfterCommit();
 }
 ```
+
+*주문
+
  http http://fashion-order:8080/orders productId=1 productName=“Outwear-1” qty=1
- 
+
+* 이벤트 확인
+
 > {"eventType":"OrderPlaced","timestamp":"20220407124339","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
 > {"eventType”:”StoreAccepted”,”timestamp":"20220407124339","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
 > {"eventType":"DeliveryStarted","timestamp":"20220407124339","id":1,"orderId":1,"productId":1,"productName":"“Outwear-1”","me":true}
 
-#### 주문취소
+### 주문취소
 
+StoreOrder.java
+```java
+    @PreRemove
+    public void onPreRemove(){
+    StoreCancelled storeCancelled = new StoreCancelled();
+    BeanUtils.copyProperties(this, storeCancelled);
+    storeCancelled.publishAfterCommit();
+```
+
+
+PolicyHandler.java - Store
+```java
+    @StreamListener(KafkaProcessor.INPUT)
+    public void wheneverOrderCancelled_StoreCancelled(@Payload OrderCancelled orderCancelled){
+    if(orderCancelled.isMe()){
+        List<StoreOrder> storeOrderList = storeRepository.findByOrderId(orderCancelled.getId());
+        if ((storeOrderList != null) && !storeOrderList.isEmpty()){
+            storeRepository.deleteAll(storeOrderList);
+        }
+    }
+```
+
+Delivery.java
+```java
+    @PreRemove
+    public void onPreRemove(){
+    DeliveryCancelled deliveryCancelled = new DeliveryCancelled();
+    BeanUtils.copyProperties(this, deliveryCancelled);
+    deliveryCancelled.publishAfterCommit();
+```
+
+PolicyHandler.java - Delivery
+```java
+    @StreamListener(KafkaProcessor.INPUT)
+    public void wheneverStoreCancelled_DeleteDelivery(@Payload StoreCancelled storeCancelled){
+        List<Delivery> deliveryList = deliveryRepository.findByOrderId(storeCancelled.getId());
+        if ((deliveryList != null) && !deliveryList.isEmpty()){
+            deliveryRepository.deleteAll(deliveryList);
+    }
+```
+
+* 주문 취소
+
+http DELETE http://fashion-order:8080/orders/1
+
+* 이벤트 확인
+
+> {"eventType":"OrderCancelled","timestamp":"20220407124417","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
+> {"eventType”:”StoreCancelled","timestamp":"20220407124417","id":1,"productId":1,"qty":1,"productName":"“Outwear-1”","me":true}
+> {"eventType":"DeliveryCancelled","timestamp":"20220407124417","id":1,"orderId":1,"productId":1,"productName":"“Outwear-1”","me":true}
 
 
 ## Req / Resp
